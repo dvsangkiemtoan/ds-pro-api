@@ -1,7 +1,6 @@
 """
 DS Pro V9.9 - Stock Data API for Render
-Vietnam Stock Market - Real-time data with vnstock
-Handles both market hours (realtime) and after-hours (last close)
+Vietnam Stock Market - Real-time data with vnstock + fallback
 """
 
 from fastapi import FastAPI, Query
@@ -52,7 +51,7 @@ def is_market_hours() -> bool:
     return False
 
 # ==========================================
-# DANH SÁCH 430 CỔ PHIẾU (Thực tế lấy được)
+# DANH SÁCH 430 CỔ PHIẾU
 # ==========================================
 
 ALL_STOCKS = [
@@ -67,12 +66,7 @@ ALL_STOCKS = [
     "AMD", "BFC", "SJS", "SZC", "TDC", "DIG", "TCH", "TDH", "HAR", "HUT",
     "HVH", "LGL", "NBB", "PXL", "RCL", "SJD", "TIX", "VCR", "VPH", "CRE",
     "DPR", "DRH", "DTI", "D2D", "DQC", "EVG", "FDC", "FIR", "FLC", "HBC",
-    "HDC", "HHS", "HID", "HMC", "HPH", "HPP", "HRC", "HTN", "HU1", "HU3",
-    "IDJ", "IJC", "ILB", "KHP", "KMR", "KOS", "KPF", "KSD", "KSF", "KSH",
-    "LAF", "L10", "L12", "L14", "L18", "L40", "L62", "L63", "LBE", "LCG",
-    "LCS", "LDP", "LM8", "MCF", "MCH", "MCM", "MCO", "MCP", "MDG", "MEL",
-    "MHC", "MHL", "MIC", "MIG", "MKV", "MLS", "MPC", "MSH", "MST", "NAC",
-    "NAF", "NAG", "NAV", "NBC", "NCB", "NCT", "NDC", "NDN", "NDP", "NHA"
+    "HDC", "HHS", "HID", "HMC", "HPH", "HPP", "HRC", "HTN", "HU1", "HU3"
 ]
 
 def get_all_stocks() -> List[str]:
@@ -221,6 +215,7 @@ MARKET_CAP = {
     "VIC": 130000, "VHM": 150000, "VRE": 60000, "HPG": 140000, "FPT": 95000,
     "MWG": 75000, "PNJ": 40000, "VNM": 160000, "MSN": 80000, "GAS": 170000,
     "PLX": 55000, "SAB": 50000, "VJC": 45000, "SHB": 35000, "SSI": 30000,
+    "VIB": 32000, "LPB": 28000, "MSB": 25000, "OCB": 22000, "NAB": 18000,
 }
 
 def get_stock_group(symbol: str) -> str:
@@ -235,13 +230,53 @@ def get_stock_group(symbol: str) -> str:
         return "PENNY"
 
 # ==========================================
-# LẤY DỮ LIỆU REALTIME TỪ VNSTOCK (CÓ FALLBACK)
+# DỮ LIỆU MẪU FALLBACK
+# ==========================================
+
+SAMPLE_PRICES = {
+    "VCB": 89500, "BID": 52500, "CTG": 34500, "TCB": 42800, "MBB": 25600,
+    "ACB": 28900, "VPB": 19600, "TPB": 27800, "STB": 31900, "HDB": 25800,
+    "VIC": 43500, "VHM": 48500, "VRE": 28500, "NVL": 14800, "KDH": 32800,
+    "HPG": 26500, "FPT": 76000, "MWG": 81000, "PNJ": 94500, "VNM": 74500,
+    "MSN": 72500, "GAS": 118500, "PLX": 36500, "SAB": 168500, "VJC": 104500,
+}
+
+def get_sample_data(symbol: str) -> Dict[str, Any]:
+    """Trả về dữ liệu mẫu khi không lấy được dữ liệu thật"""
+    price = SAMPLE_PRICES.get(symbol, 50000)
+    ma20 = price * 0.98
+    ma50 = price * 0.96
+    
+    return {
+        'price': price,
+        'change': 0,
+        'changePercent': 0,
+        'volume': 1000000,
+        'high': price * 1.01,
+        'low': price * 0.99,
+        'open': price,
+        'ma20': round(ma20, 2),
+        'ma50': round(ma50, 2),
+        'rsi': 55,
+        'adx': 25,
+        'atr': price * 0.02,
+        'rr_ratio': 1.5,
+        'avgVolume20': 1000000,
+        'volume_ratio': 1,
+        'score': 65,
+        'source': 'sample',
+        'time': datetime.now().isoformat(),
+        'market_hours': is_market_hours()
+    }
+
+# ==========================================
+# LẤY DỮ LIỆU TỪ VNSTOCK (CÓ FALLBACK)
 # ==========================================
 
 def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
     """
     Lấy dữ liệu realtime từ vnstock
-    Nếu ngoài giờ giao dịch, lấy giá đóng cửa phiên trước
+    Nếu lỗi, dùng dữ liệu mẫu
     """
     try:
         from vnstock import Vnstock
@@ -252,7 +287,7 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
         stock = Vnstock().stock(symbol=symbol, source="VCI")
         current = stock.quote.current_price()
         
-        # Lấy lịch sử 60 ngày để tính MA
+        # Lấy lịch sử 60 ngày
         end = datetime.now()
         start = end - timedelta(days=60)
         history = stock.quote.history(
@@ -261,8 +296,8 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
         )
         
         if history.empty:
-            print(f"⚠️ No historical data for {symbol}")
-            return None
+            print(f"⚠️ No historical data for {symbol}, using sample")
+            return get_sample_data(symbol)
         
         closes = history['close'].tolist()
         volumes = history['volume'].tolist()
@@ -286,6 +321,7 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
             high = current.get('high', price)
             low = current.get('low', price)
             open_price = current.get('open', price)
+            print(f"✅ Got realtime {symbol}: {price}")
         else:
             # Ngoài giờ giao dịch, lấy giá đóng cửa gần nhất
             price = closes[-1] if closes else 0
@@ -295,14 +331,15 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
             high = highs[-1] if highs else price
             low = lows[-1] if lows else price
             open_price = history['open'].tolist()[-1] if not history.empty else price
+            print(f"✅ Got historical {symbol}: {price}")
+        
+        if price == 0:
+            print(f"⚠️ Price is 0 for {symbol}, using sample")
+            return get_sample_data(symbol)
         
         volume_ratio = volume / avg_volume if avg_volume > 0 else 1
         rr_ratio = calculate_risk_reward_vn(price, atr, adx)
-        
-        # Tính điểm
         score = calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio)
-        
-        print(f"✅ Got {symbol}: {price}")
         
         return {
             'price': price,
@@ -328,7 +365,7 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
         
     except Exception as e:
         print(f"❌ Error with {symbol}: {e}")
-        return None
+        return get_sample_data(symbol)
 
 def get_stock_data_batch(symbols: List[str]) -> Dict[str, Any]:
     """Lấy dữ liệu batch cho nhiều mã"""
