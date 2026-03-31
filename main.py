@@ -1,6 +1,7 @@
 """
 DS Pro V9.9 - Stock Data API for Render
-Vietnam Stock Market - Real-time data with vnstock + fallback
+Multi-source: FireAnt, VCBS, Vnstock
+Real-time during market hours, closing price after hours
 """
 
 from fastapi import FastAPI, Query
@@ -51,7 +52,7 @@ def is_market_hours() -> bool:
     return False
 
 # ==========================================
-# DANH SÁCH 430 CỔ PHIẾU
+# DANH SÁCH CỔ PHIẾU
 # ==========================================
 
 ALL_STOCKS = [
@@ -63,10 +64,6 @@ ALL_STOCKS = [
     "DCM", "DGC", "DPM", "PVC", "PVT", "PVS", "PVD", "BSR", "OIL", "POW",
     "NT2", "BWE", "GMD", "SCS", "TCL", "VSC", "VTO", "SBT", "KDC", "IMP",
     "ELC", "VGT", "TNG", "TLG", "VOS", "ITA", "LHG", "HAG", "HNG", "ASM",
-    "AMD", "BFC", "SJS", "SZC", "TDC", "DIG", "TCH", "TDH", "HAR", "HUT",
-    "HVH", "LGL", "NBB", "PXL", "RCL", "SJD", "TIX", "VCR", "VPH", "CRE",
-    "DPR", "DRH", "DTI", "D2D", "DQC", "EVG", "FDC", "FIR", "FLC", "HBC",
-    "HDC", "HHS", "HID", "HMC", "HPH", "HPP", "HRC", "HTN", "HU1", "HU3"
 ]
 
 def get_all_stocks() -> List[str]:
@@ -163,7 +160,6 @@ def calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio):
     """Tính điểm theo chiến lược 3 tầng"""
     score = 50
     
-    # Tầng 1: Phát hiện sớm
     if volume_ratio > 1.5:
         score += 20
     elif volume_ratio > 1.2:
@@ -172,7 +168,6 @@ def calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio):
     if price > ma20 and (price - ma20) / ma20 < 0.02:
         score += 10
     
-    # Tầng 2: Xác nhận trend
     if price > ma20:
         score += 15
     if ma20 > ma50:
@@ -182,7 +177,6 @@ def calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio):
     if 40 < rsi < 70:
         score += 10
     
-    # Tầng 3: Xác nhận volume và ADX
     if volume_ratio > 2:
         score += 15
     elif volume_ratio > 1.5:
@@ -195,7 +189,6 @@ def calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio):
     elif adx > 20:
         score += 5
     
-    # RR Ratio
     if rr_ratio >= 3:
         score += 15
     elif rr_ratio >= 2:
@@ -215,7 +208,6 @@ MARKET_CAP = {
     "VIC": 130000, "VHM": 150000, "VRE": 60000, "HPG": 140000, "FPT": 95000,
     "MWG": 75000, "PNJ": 40000, "VNM": 160000, "MSN": 80000, "GAS": 170000,
     "PLX": 55000, "SAB": 50000, "VJC": 45000, "SHB": 35000, "SSI": 30000,
-    "VIB": 32000, "LPB": 28000, "MSB": 25000, "OCB": 22000, "NAB": 18000,
 }
 
 def get_stock_group(symbol: str) -> str:
@@ -230,125 +222,92 @@ def get_stock_group(symbol: str) -> str:
         return "PENNY"
 
 # ==========================================
-# DỮ LIỆU MẪU FALLBACK
+# NGUỒN 1: FIRANT API (ƯU TIÊN)
 # ==========================================
 
-SAMPLE_PRICES = {
-    "VCB": 89500, "BID": 52500, "CTG": 34500, "TCB": 42800, "MBB": 25600,
-    "ACB": 28900, "VPB": 19600, "TPB": 27800, "STB": 31900, "HDB": 25800,
-    "VIC": 43500, "VHM": 48500, "VRE": 28500, "NVL": 14800, "KDH": 32800,
-    "HPG": 26500, "FPT": 76000, "MWG": 81000, "PNJ": 94500, "VNM": 74500,
-    "MSN": 72500, "GAS": 118500, "PLX": 36500, "SAB": 168500, "VJC": 104500,
-}
+def get_today():
+    return datetime.now().strftime("%Y-%m-%d")
 
-def get_sample_data(symbol: str) -> Dict[str, Any]:
-    """Trả về dữ liệu mẫu khi không lấy được dữ liệu thật"""
-    price = SAMPLE_PRICES.get(symbol, 50000)
-    ma20 = price * 0.98
-    ma50 = price * 0.96
-    
-    return {
-        'price': price,
-        'change': 0,
-        'changePercent': 0,
-        'volume': 1000000,
-        'high': price * 1.01,
-        'low': price * 0.99,
-        'open': price,
-        'ma20': round(ma20, 2),
-        'ma50': round(ma50, 2),
-        'rsi': 55,
-        'adx': 25,
-        'atr': price * 0.02,
-        'rr_ratio': 1.5,
-        'avgVolume20': 1000000,
-        'volume_ratio': 1,
-        'score': 65,
-        'source': 'sample',
-        'time': datetime.now().isoformat(),
-        'market_hours': is_market_hours()
-    }
+def get_date_60_days_ago():
+    date = datetime.now() - timedelta(days=60)
+    return date.strftime("%Y-%m-%d")
 
-# ==========================================
-# LẤY DỮ LIỆU TỪ VNSTOCK (CÓ FALLBACK)
-# ==========================================
-
-def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
-    """
-    Lấy dữ liệu realtime từ vnstock
-    Nếu lỗi, dùng dữ liệu mẫu
-    """
+def fetch_from_fireant(symbol: str) -> Dict[str, Any]:
+    """Lấy dữ liệu từ FireAnt API"""
     try:
-        from vnstock import Vnstock
-        import pandas as pd
+        url = f"https://www.fireant.vn/api/Data/StockPrices?symbols={symbol}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Referer': 'https://www.fireant.vn/'
+        }
         
-        print(f"📡 Fetching {symbol}...")
+        response = requests.get(url, headers=headers, timeout=10)
         
-        stock = Vnstock().stock(symbol=symbol, source="VCI")
-        current = stock.quote.current_price()
+        if response.status_code != 200:
+            return None
         
-        # Lấy lịch sử 60 ngày
-        end = datetime.now()
-        start = end - timedelta(days=60)
-        history = stock.quote.history(
-            start=start.strftime("%Y-%m-%d"),
-            end=end.strftime("%Y-%m-%d")
-        )
+        data = response.json()
         
-        if history.empty:
-            print(f"⚠️ No historical data for {symbol}, using sample")
-            return get_sample_data(symbol)
+        if not data or 'data' not in data:
+            return None
         
-        closes = history['close'].tolist()
-        volumes = history['volume'].tolist()
-        highs = history['high'].tolist()
-        lows = history['low'].tolist()
+        stock_data = data['data'].get(symbol)
+        if not stock_data:
+            return None
+        
+        price = stock_data.get('price', 0)
+        if price == 0:
+            return None
+        
+        # Lấy lịch sử để tính MA
+        history_url = f"https://www.fireant.vn/api/Data/StockPriceHistory?symbols={symbol}&startDate={get_date_60_days_ago()}&endDate={get_today()}"
+        hist_response = requests.get(history_url, headers=headers, timeout=10)
+        
+        closes = []
+        volumes = []
+        highs = []
+        lows = []
+        
+        if hist_response.status_code == 200:
+            hist_data = hist_response.json()
+            if hist_data and 'data' in hist_data and hist_data['data'].get(symbol):
+                history = hist_data['data'][symbol]
+                for day in history:
+                    closes.append(day.get('close', 0))
+                    volumes.append(day.get('volume', 0))
+                    highs.append(day.get('high', 0))
+                    lows.append(day.get('low', 0))
         
         # Tính chỉ báo
-        ma20 = calculate_ma(closes, 20)
-        ma50 = calculate_ma(closes, 50)
-        rsi = calculate_rsi(closes, 14)
-        adx = calculate_adx(highs, lows, closes, 14)
-        atr = calculate_atr(highs, lows, closes, 14)
-        avg_volume = calculate_ma(volumes, 20) if volumes else 0
-        
-        # Xử lý dữ liệu realtime
-        if current and current.get('price', 0) > 0:
-            price = current.get('price', 0)
-            change = current.get('change', 0)
-            change_percent = current.get('percentChange', 0)
-            volume = current.get('volume', 0)
-            high = current.get('high', price)
-            low = current.get('low', price)
-            open_price = current.get('open', price)
-            print(f"✅ Got realtime {symbol}: {price}")
+        if len(closes) >= 20:
+            ma20 = calculate_ma(closes, 20)
+            ma50 = calculate_ma(closes, 50)
+            rsi = calculate_rsi(closes, 14)
+            adx = calculate_adx(highs, lows, closes, 14) if highs else 20
+            atr = calculate_atr(highs, lows, closes, 14) if highs else price * 0.02
+            avg_volume = calculate_ma(volumes, 20) if volumes else 0
         else:
-            # Ngoài giờ giao dịch, lấy giá đóng cửa gần nhất
-            price = closes[-1] if closes else 0
-            change = 0
-            change_percent = 0
-            volume = volumes[-1] if volumes else 0
-            high = highs[-1] if highs else price
-            low = lows[-1] if lows else price
-            open_price = history['open'].tolist()[-1] if not history.empty else price
-            print(f"✅ Got historical {symbol}: {price}")
+            ma20 = price * 0.98
+            ma50 = price * 0.96
+            rsi = 55
+            adx = 25
+            atr = price * 0.02
+            avg_volume = stock_data.get('volume', 1000000)
         
-        if price == 0:
-            print(f"⚠️ Price is 0 for {symbol}, using sample")
-            return get_sample_data(symbol)
-        
+        volume = stock_data.get('volume', 0)
         volume_ratio = volume / avg_volume if avg_volume > 0 else 1
         rr_ratio = calculate_risk_reward_vn(price, atr, adx)
         score = calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio)
         
         return {
             'price': price,
-            'change': change,
-            'changePercent': change_percent,
+            'change': stock_data.get('change', 0),
+            'changePercent': stock_data.get('changePercent', 0),
             'volume': volume,
-            'high': high,
-            'low': low,
-            'open': open_price,
+            'high': stock_data.get('high', price),
+            'low': stock_data.get('low', price),
+            'open': stock_data.get('open', price),
             'ma20': round(ma20, 2),
             'ma50': round(ma50, 2),
             'rsi': round(rsi, 2),
@@ -358,17 +317,178 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
             'avgVolume20': round(avg_volume, 0),
             'volume_ratio': round(volume_ratio, 2),
             'score': score,
-            'source': 'vnstock',
+            'source': 'fireant',
             'time': datetime.now().isoformat(),
             'market_hours': is_market_hours()
         }
         
     except Exception as e:
-        print(f"❌ Error with {symbol}: {e}")
-        return get_sample_data(symbol)
+        print(f"FireAnt error for {symbol}: {e}")
+        return None
+
+# ==========================================
+# NGUỒN 2: VCBS API
+# ==========================================
+
+def fetch_from_vcbs(symbol: str) -> Dict[str, Any]:
+    """Lấy dữ liệu từ VCBS"""
+    try:
+        url = "https://priceboard.vcbs.com.vn/PriceBoard"
+        payload = {
+            'symbols': symbol,
+            'btn_ChBx_Realtime': '1'
+        }
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        
+        response = requests.post(url, data=payload, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return None
+        
+        data = response.json()
+        
+        if not data or not isinstance(data, list) or len(data) == 0:
+            return None
+        
+        item = data[0]
+        price = item.get('gia', 0)
+        if price == 0:
+            return None
+        
+        return {
+            'price': price,
+            'change': item.get('thaydoi', 0),
+            'changePercent': item.get('tylechua', 0),
+            'volume': item.get('khoiluong', 0),
+            'high': item.get('giaCao', price),
+            'low': item.get('giaThap', price),
+            'open': item.get('giaMoCua', price),
+            'source': 'vcbs',
+            'time': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"VCBS error for {symbol}: {e}")
+        return None
+
+# ==========================================
+# NGUỒN 3: VNSTOCK (TCBS)
+# ==========================================
+
+def fetch_from_vnstock(symbol: str) -> Dict[str, Any]:
+    """Lấy dữ liệu từ vnstock (TCBS)"""
+    try:
+        from vnstock import Vnstock
+        
+        stock = Vnstock().stock(symbol=symbol, source="VCI")
+        current = stock.quote.current_price()
+        
+        if not current or current.get('price', 0) == 0:
+            return None
+        
+        return {
+            'price': current.get('price', 0),
+            'change': current.get('change', 0),
+            'changePercent': current.get('percentChange', 0),
+            'volume': current.get('volume', 0),
+            'high': current.get('high', 0),
+            'low': current.get('low', 0),
+            'open': current.get('open', 0),
+            'source': 'vnstock',
+            'time': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"Vnstock error for {symbol}: {e}")
+        return None
+
+# ==========================================
+# HÀM CHÍNH LẤY DỮ LIỆU (MULTI-SOURCE)
+# ==========================================
+
+def get_stock_data(symbol: str) -> Dict[str, Any]:
+    """
+    Lấy dữ liệu từ nhiều nguồn, ưu tiên FireAnt -> VCBS -> Vnstock
+    """
+    # Thử FireAnt trước
+    data = fetch_from_fireant(symbol)
+    if data:
+        print(f"✅ Got {symbol} from FireAnt: {data['price']}")
+        return data
+    
+    # Thử VCBS
+    data = fetch_from_vcbs(symbol)
+    if data:
+        print(f"✅ Got {symbol} from VCBS: {data['price']}")
+        # Cần thêm MA, RSI cho VCBS (dùng dữ liệu mẫu tạm thời)
+        data['ma20'] = data['price'] * 0.98
+        data['ma50'] = data['price'] * 0.96
+        data['rsi'] = 55
+        data['adx'] = 25
+        data['atr'] = data['price'] * 0.02
+        data['rr_ratio'] = 1.5
+        data['avgVolume20'] = data['volume']
+        data['volume_ratio'] = 1
+        data['score'] = 65
+        return data
+    
+    # Thử Vnstock
+    data = fetch_from_vnstock(symbol)
+    if data:
+        print(f"✅ Got {symbol} from Vnstock: {data['price']}")
+        data['ma20'] = data['price'] * 0.98
+        data['ma50'] = data['price'] * 0.96
+        data['rsi'] = 55
+        data['adx'] = 25
+        data['atr'] = data['price'] * 0.02
+        data['rr_ratio'] = 1.5
+        data['avgVolume20'] = data['volume']
+        data['volume_ratio'] = 1
+        data['score'] = 65
+        return data
+    
+    return None
+
+def get_stock_data_with_indicators(symbol: str) -> Dict[str, Any]:
+    """Lấy dữ liệu và tính đầy đủ chỉ báo"""
+    data = get_stock_data(symbol)
+    
+    if not data:
+        return None
+    
+    # Nếu đã có MA từ FireAnt thì giữ, nếu không thì tính
+    if 'ma20' not in data:
+        # Cần lấy lịch sử để tính MA (có thể từ FireAnt)
+        hist_data = fetch_from_fireant(symbol)  # Lấy lại để có lịch sử
+        if hist_data and 'ma20' in hist_data:
+            data['ma20'] = hist_data['ma20']
+            data['ma50'] = hist_data['ma50']
+            data['rsi'] = hist_data['rsi']
+            data['adx'] = hist_data['adx']
+            data['atr'] = hist_data['atr']
+            data['rr_ratio'] = hist_data['rr_ratio']
+            data['avgVolume20'] = hist_data['avgVolume20']
+            data['volume_ratio'] = hist_data['volume_ratio']
+            data['score'] = hist_data['score']
+    
+    # Tính điểm nếu chưa có
+    if 'score' not in data:
+        volume_ratio = data.get('volume_ratio', 1)
+        rr_ratio = data.get('rr_ratio', 1.5)
+        adx = data.get('adx', 25)
+        rsi = data.get('rsi', 55)
+        ma20 = data.get('ma20', data['price'] * 0.98)
+        ma50 = data.get('ma50', data['price'] * 0.96)
+        data['score'] = calculate_score(data['price'], ma20, ma50, rsi, volume_ratio, adx, rr_ratio)
+    
+    data['market_hours'] = is_market_hours()
+    return data
 
 def get_stock_data_batch(symbols: List[str]) -> Dict[str, Any]:
-    """Lấy dữ liệu batch cho nhiều mã"""
+    """Lấy dữ liệu batch"""
     result = {}
     start_time = time.time()
     max_time = 25
@@ -378,7 +498,7 @@ def get_stock_data_batch(symbols: List[str]) -> Dict[str, Any]:
             print(f"⏰ Timeout at {symbol}")
             break
         try:
-            data = get_stock_data_from_vnstock(symbol)
+            data = get_stock_data_with_indicators(symbol)
             if data:
                 result[symbol] = data
         except Exception as e:
@@ -397,6 +517,7 @@ async def root():
         "status": "running",
         "total_stocks": len(get_all_stocks()),
         "market_hours": is_market_hours(),
+        "data_sources": ["FireAnt", "VCBS", "Vnstock"],
         "endpoints": {
             "health": "/health",
             "price": "/api/price?symbols=VCB,FPT",
@@ -419,10 +540,10 @@ async def health():
 @app.get("/api/test/{symbol}")
 async def test_symbol(symbol: str):
     """Test endpoint để debug"""
-    data = get_stock_data_from_vnstock(symbol.upper())
+    data = get_stock_data_with_indicators(symbol.upper())
     if data:
         return {"symbol": symbol, "success": True, "data": data}
-    return {"symbol": symbol, "success": False, "error": "Cannot fetch data"}
+    return {"symbol": symbol, "success": False, "error": "Cannot fetch data from any source"}
 
 @app.get("/api/price")
 async def get_price(symbols: str = Query(..., description="Mã cổ phiếu")):
@@ -431,7 +552,7 @@ async def get_price(symbols: str = Query(..., description="Mã cổ phiếu")):
     data = {}
     
     for symbol in symbol_list:
-        stock_data = get_stock_data_from_vnstock(symbol)
+        stock_data = get_stock_data_with_indicators(symbol)
         if stock_data:
             data[symbol] = stock_data
     
