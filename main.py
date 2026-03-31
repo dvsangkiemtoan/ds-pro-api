@@ -1,8 +1,7 @@
 """
 DS Pro V9.9 - Stock Data API for Render
 Vietnam Stock Market - Real-time data with vnstock
-500 cổ phiếu thanh khoản cao nhất
-Deploy on Render.com
+Handles both market hours (realtime) and after-hours (last close)
 """
 
 from fastapi import FastAPI, Query
@@ -11,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import time
 import os
+import requests
 
 app = FastAPI(title="DS Pro Stock API", version="9.9")
 
@@ -35,75 +35,44 @@ def set_cache(key: str, value: Any):
     cache[key] = value
     cache_time[key] = time.time()
 
+def is_market_hours() -> bool:
+    """Kiểm tra có phải giờ giao dịch không (9:00-11:30, 13:00-15:00)"""
+    now = datetime.now()
+    hour = now.hour
+    minute = now.minute
+    current_time = hour * 60 + minute
+    
+    if now.weekday() >= 5:  # Thứ 7, Chủ nhật
+        return False
+    
+    if 9 * 60 <= current_time <= 11 * 60 + 30:
+        return True
+    if 13 * 60 <= current_time <= 15 * 60:
+        return True
+    return False
+
 # ==========================================
-# DANH SÁCH 500 CỔ PHIẾU THANH KHOẢN CAO NHẤT
+# DANH SÁCH 430 CỔ PHIẾU (Thực tế lấy được)
 # ==========================================
 
 ALL_STOCKS = [
-    # === VN30 (30 mã) ===
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "TPB", "STB", "HDB",
     "VIC", "VHM", "VRE", "NVL", "KDH", "PDR", "DXS", "NLG", "HPG", "FPT",
     "MWG", "PNJ", "VNM", "MSN", "GAS", "PLX", "SAB", "VJC", "SHB", "SSI",
-    
-    # === Ngân hàng & Tài chính (40 mã) ===
     "VIB", "LPB", "MSB", "OCB", "NAB", "ABB", "EIB", "SGB", "PGB", "BVB",
-    "KLB", "NVB", "BAB", "TGB", "VBB", "BDB", "APG", "APS", "AAS", "ABW",
-    "ACE", "ACL", "ADP", "AAM", "ABC", "ABT", "ACC", "ACG", "ACL", "ADA",
-    
-    # === Bất động sản (50 mã) ===
-    "KBC", "IDC", "SIP", "BCM", "VGC", "HDG", "LDG", "HQC", "QCG", "ITA",
-    "NTL", "SJS", "SZC", "TDC", "LHG", "DIG", "TCH", "TDH", "HAR", "HUT",
+    "CMG", "GEX", "VGI", "CTR", "FRT", "PET", "DGW", "HSG", "NKG", "VHC",
+    "DCM", "DGC", "DPM", "PVC", "PVT", "PVS", "PVD", "BSR", "OIL", "POW",
+    "NT2", "BWE", "GMD", "SCS", "TCL", "VSC", "VTO", "SBT", "KDC", "IMP",
+    "ELC", "VGT", "TNG", "TLG", "VOS", "ITA", "LHG", "HAG", "HNG", "ASM",
+    "AMD", "BFC", "SJS", "SZC", "TDC", "DIG", "TCH", "TDH", "HAR", "HUT",
     "HVH", "LGL", "NBB", "PXL", "RCL", "SJD", "TIX", "VCR", "VPH", "CRE",
     "DPR", "DRH", "DTI", "D2D", "DQC", "EVG", "FDC", "FIR", "FLC", "HBC",
     "HDC", "HHS", "HID", "HMC", "HPH", "HPP", "HRC", "HTN", "HU1", "HU3",
-    
-    # === Công nghệ & Viễn thông (40 mã) ===
-    "CMG", "ELC", "VGI", "GEX", "CTR", "MFS", "SGT", "ICT", "PTI", "TLD",
-    "VIP", "VMA", "VPS", "VSD", "VSI", "VTP", "VTV", "ALT", "AMV", "ANT",
-    "APP", "ATE", "BAF", "BIC", "BMC", "BMI", "BMP", "BSI", "BVS", "C4G",
-    "CAG", "CAV", "CBS", "CCI", "CDC", "CEG", "CEN", "CET", "CKG", "CLL",
-    
-    # === Bán lẻ & Dịch vụ (50 mã) ===
-    "FRT", "PET", "DGW", "HVN", "ACV", "SGN", "AST", "CJP", "CLC", "CMV",
-    "CTD", "CTI", "CYC", "DAD", "DAG", "DAS", "DBD", "DCL", "DGC", "DHC",
-    "DHT", "DIC", "DMC", "DPC", "DPR", "DQC", "DRC", "DSN", "DST", "DTA",
-    "DTD", "DTK", "DTT", "DXV", "EVE", "FCM", "FDC", "FIT", "FMC", "FTS",
-    
-    # === Dầu khí & Năng lượng (50 mã) ===
-    "POW", "NT2", "PVT", "PVS", "PVD", "BSR", "OIL", "PVC", "ASP", "BTP",
-    "BWE", "DNC", "DNL", "DPG", "DRL", "DWC", "EVE", "GDT", "GEG", "HAH",
-    "HBC", "HES", "HGM", "HHC", "HJS", "HMC", "HND", "HNF", "HPD", "HPW",
-    "HRT", "HT1", "KHP", "L18", "L61", "L62", "LAF", "LBM", "LCG", "LCS",
-    
-    # === Vật liệu xây dựng (50 mã) ===
-    "HSG", "NKG", "POM", "TLG", "TNG", "VGT", "VOS", "VSC", "AAA", "AMD",
-    "BFC", "BMC", "BRC", "BTT", "CAN", "CLX", "COM", "CSV", "DCM", "DGC",
-    "DHC", "DHP", "DPM", "DRC", "DTD", "DXP", "GIL", "GMC", "HAX", "HCM",
-    "HHS", "HOT", "HPH", "HPP", "HRC", "HTP", "HTV", "IDC", "IMP", "ITC",
-    
-    # === Thủy sản & Nông nghiệp (40 mã) ===
-    "VHC", "ANV", "ACL", "AGF", "FMC", "IDI", "MPC", "CMX", "ABT", "AAM",
-    "ASM", "BT6", "BTD", "BTH", "BTS", "CAN", "CII", "CLC", "CLX", "CMV",
-    "CNC", "CPC", "CSC", "CSM", "CTB", "CTC", "CTD", "CTI", "CTR", "CTS",
-    
-    # === Logistics (30 mã) ===
-    "GMD", "SCS", "TCL", "VTO", "VNA", "VNS", "VNT", "VNE", "VRC", "VSG",
-    "VSH", "VSM", "VSN", "VTB", "VTC", "VTR", "WCS", "WSS", "WTC", "SGP",
-    "SGR", "SGT", "SHA", "SHE", "SHS", "SIC", "SJD", "SJE", "SJF", "SJG",
-    
-    # === Hóa chất & Cao su (40 mã) ===
-    "DCM", "DGC", "DHC", "DHP", "DPM", "DRC", "DTD", "DXP", "GIL", "GMC",
-    "HAX", "HCM", "HHS", "HOT", "HPH", "HPP", "HRC", "HTP", "HTV", "IDC",
-    "IMP", "ITC", "KDC", "KHP", "KMR", "KOS", "KPF", "KSD", "KSF", "KSH",
-    
-    # === Khác (80 mã) ===
-    "BHN", "DBC", "HAG", "HNG", "SBT", "KDC", "IMP", "ITA", "ITC", "LHG",
-    "MCH", "MCM", "MCO", "MCP", "MDG", "MEL", "MHC", "MHL", "MIC", "MIG",
-    "MKV", "MLS", "MPC", "MSH", "MST", "NAC", "NAF", "NAG", "NAV", "NBB",
-    "NBC", "NCB", "NCT", "NDC", "NDN", "NDP", "NHA", "NHC", "NHT", "NNC",
-    "NNG", "NSC", "NSH", "NTP", "NVT", "OCH", "OGC", "OPC", "PAC", "PBP",
-    "PCC", "PCE", "PCG", "PCT", "PDB", "PDC", "PDV", "PEC", "PEP", "PGC",
-    "PGD", "PGI", "PGS", "PGT", "PHC", "PHD", "PHR", "PIT", "PJT", "PLC"
+    "IDJ", "IJC", "ILB", "KHP", "KMR", "KOS", "KPF", "KSD", "KSF", "KSH",
+    "LAF", "L10", "L12", "L14", "L18", "L40", "L62", "L63", "LBE", "LCG",
+    "LCS", "LDP", "LM8", "MCF", "MCH", "MCM", "MCO", "MCP", "MDG", "MEL",
+    "MHC", "MHL", "MIC", "MIG", "MKV", "MLS", "MPC", "MSH", "MST", "NAC",
+    "NAF", "NAG", "NAV", "NBC", "NCB", "NCT", "NDC", "NDN", "NDP", "NHA"
 ]
 
 def get_all_stocks() -> List[str]:
@@ -200,7 +169,7 @@ def calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio):
     """Tính điểm theo chiến lược 3 tầng"""
     score = 50
     
-    # Tầng 1: Phát hiện sớm (volume spike)
+    # Tầng 1: Phát hiện sớm
     if volume_ratio > 1.5:
         score += 20
     elif volume_ratio > 1.2:
@@ -265,46 +234,25 @@ def get_stock_group(symbol: str) -> str:
     else:
         return "PENNY"
 
-def get_volume_threshold(symbol: str, volume_ratio: float) -> tuple:
-    group = get_stock_group(symbol)
-    
-    thresholds = {
-        "BLUE_CHIP": {"strong": 1.8, "moderate": 1.4, "weak": 1.2},
-        "MID_CAP": {"strong": 2.2, "moderate": 1.7, "weak": 1.3},
-        "SMALL_CAP": {"strong": 2.8, "moderate": 2.0, "weak": 1.5},
-        "PENNY": {"strong": 3.5, "moderate": 2.5, "weak": 1.8}
-    }
-    
-    t = thresholds[group]
-    volume_score = 0
-    
-    if volume_ratio >= t["strong"]:
-        volume_score = 20
-    elif volume_ratio >= t["moderate"]:
-        volume_score = 12
-    elif volume_ratio >= t["weak"]:
-        volume_score = 6
-    
-    return volume_score, group
-
 # ==========================================
-# LẤY DỮ LIỆU REALTIME TỪ VNSTOCK
+# LẤY DỮ LIỆU REALTIME TỪ VNSTOCK (CÓ FALLBACK)
 # ==========================================
 
 def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
     """
     Lấy dữ liệu realtime từ vnstock
+    Nếu ngoài giờ giao dịch, lấy giá đóng cửa phiên trước
     """
     try:
         from vnstock import Vnstock
+        import pandas as pd
+        
+        print(f"📡 Fetching {symbol}...")
         
         stock = Vnstock().stock(symbol=symbol, source="VCI")
         current = stock.quote.current_price()
         
-        if not current or current.get('price', 0) == 0:
-            return None
-        
-        # Lấy lịch sử 60 ngày
+        # Lấy lịch sử 60 ngày để tính MA
         end = datetime.now()
         start = end - timedelta(days=60)
         history = stock.quote.history(
@@ -312,10 +260,14 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
             end=end.strftime("%Y-%m-%d")
         )
         
-        closes = history['close'].tolist() if not history.empty else []
-        volumes = history['volume'].tolist() if not history.empty else []
-        highs = history['high'].tolist() if not history.empty else []
-        lows = history['low'].tolist() if not history.empty else []
+        if history.empty:
+            print(f"⚠️ No historical data for {symbol}")
+            return None
+        
+        closes = history['close'].tolist()
+        volumes = history['volume'].tolist()
+        highs = history['high'].tolist()
+        lows = history['low'].tolist()
         
         # Tính chỉ báo
         ma20 = calculate_ma(closes, 20)
@@ -323,23 +275,43 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
         rsi = calculate_rsi(closes, 14)
         adx = calculate_adx(highs, lows, closes, 14)
         atr = calculate_atr(highs, lows, closes, 14)
-        avg_volume = calculate_ma(volumes, 20) if volumes else current.get('volume', 0)
+        avg_volume = calculate_ma(volumes, 20) if volumes else 0
         
-        price = current.get('price', 0)
-        volume_ratio = current.get('volume', 0) / avg_volume if avg_volume > 0 else 1
+        # Xử lý dữ liệu realtime
+        if current and current.get('price', 0) > 0:
+            price = current.get('price', 0)
+            change = current.get('change', 0)
+            change_percent = current.get('percentChange', 0)
+            volume = current.get('volume', 0)
+            high = current.get('high', price)
+            low = current.get('low', price)
+            open_price = current.get('open', price)
+        else:
+            # Ngoài giờ giao dịch, lấy giá đóng cửa gần nhất
+            price = closes[-1] if closes else 0
+            change = 0
+            change_percent = 0
+            volume = volumes[-1] if volumes else 0
+            high = highs[-1] if highs else price
+            low = lows[-1] if lows else price
+            open_price = history['open'].tolist()[-1] if not history.empty else price
+        
+        volume_ratio = volume / avg_volume if avg_volume > 0 else 1
         rr_ratio = calculate_risk_reward_vn(price, atr, adx)
         
         # Tính điểm
         score = calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio)
         
+        print(f"✅ Got {symbol}: {price}")
+        
         return {
             'price': price,
-            'change': current.get('change', 0),
-            'changePercent': current.get('percentChange', 0),
-            'volume': current.get('volume', 0),
-            'high': current.get('high', price),
-            'low': current.get('low', price),
-            'open': current.get('open', price),
+            'change': change,
+            'changePercent': change_percent,
+            'volume': volume,
+            'high': high,
+            'low': low,
+            'open': open_price,
             'ma20': round(ma20, 2),
             'ma50': round(ma50, 2),
             'rsi': round(rsi, 2),
@@ -350,11 +322,12 @@ def get_stock_data_from_vnstock(symbol: str) -> Dict[str, Any]:
             'volume_ratio': round(volume_ratio, 2),
             'score': score,
             'source': 'vnstock',
-            'time': datetime.now().isoformat()
+            'time': datetime.now().isoformat(),
+            'market_hours': is_market_hours()
         }
         
     except Exception as e:
-        print(f"Error with {symbol}: {e}")
+        print(f"❌ Error with {symbol}: {e}")
         return None
 
 def get_stock_data_batch(symbols: List[str]) -> Dict[str, Any]:
@@ -386,11 +359,13 @@ async def root():
         "message": "DS Pro Stock API v9.9",
         "status": "running",
         "total_stocks": len(get_all_stocks()),
+        "market_hours": is_market_hours(),
         "endpoints": {
             "health": "/health",
             "price": "/api/price?symbols=VCB,FPT",
             "all": "/api/all/combined",
-            "ranking": "/api/ranking"
+            "ranking": "/api/ranking",
+            "test": "/api/test/{symbol}"
         }
     }
 
@@ -400,8 +375,17 @@ async def health():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "total_stocks": len(get_all_stocks()),
+        "market_hours": is_market_hours(),
         "cache_size": len(cache)
     }
+
+@app.get("/api/test/{symbol}")
+async def test_symbol(symbol: str):
+    """Test endpoint để debug"""
+    data = get_stock_data_from_vnstock(symbol.upper())
+    if data:
+        return {"symbol": symbol, "success": True, "data": data}
+    return {"symbol": symbol, "success": False, "error": "Cannot fetch data"}
 
 @app.get("/api/price")
 async def get_price(symbols: str = Query(..., description="Mã cổ phiếu")):
@@ -417,13 +401,14 @@ async def get_price(symbols: str = Query(..., description="Mã cổ phiếu")):
     return {
         "status": "success",
         "timestamp": datetime.now().isoformat(),
+        "market_hours": is_market_hours(),
         "count": len(data),
         "data": data
     }
 
 @app.get("/api/all/combined")
 async def get_all_combined():
-    """Lấy tất cả dữ liệu 500 mã"""
+    """Lấy tất cả dữ liệu"""
     cache_key = "all_combined"
     cached = get_cache(cache_key, 120)
     if cached:
@@ -450,6 +435,7 @@ async def get_all_combined():
     response = {
         "status": "success",
         "timestamp": datetime.now().isoformat(),
+        "market_hours": is_market_hours(),
         "total_stocks": len(all_data),
         "summary": {
             "count": len(all_data),
@@ -477,7 +463,7 @@ async def get_ranking(limit: int = Query(50, ge=10, le=100)):
     if cached:
         return cached
     
-    all_stocks = get_all_stocks()[:200]  # Lấy 200 mã để ranking
+    all_stocks = get_all_stocks()[:200]
     data = get_stock_data_batch(all_stocks)
     
     rankings = sorted(
@@ -489,6 +475,7 @@ async def get_ranking(limit: int = Query(50, ge=10, le=100)):
     response = {
         "status": "success",
         "timestamp": datetime.now().isoformat(),
+        "market_hours": is_market_hours(),
         "limit": limit,
         "count": len(rankings),
         "data": rankings
