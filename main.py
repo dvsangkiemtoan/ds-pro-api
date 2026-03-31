@@ -1,6 +1,6 @@
 """
 DS Pro V9.9 - Stock Data API for Render
-Multi-source with historical closing prices from vnstock
+Multi-source with FireAnt historical for closing prices
 """
 
 from fastapi import FastAPI, Query
@@ -261,21 +261,121 @@ def get_sample_data(symbol: str) -> Dict[str, Any]:
     }
 
 # ==========================================
-# NGUỒN 1: VNSTOCK LỊCH SỬ (GIÁ ĐÓNG CỬA) - QUAN TRỌNG NHẤT
+# NGUỒN CHÍNH: FIRANT LỊCH SỬ (GIÁ ĐÓNG CỬA)
+# ==========================================
+
+def fetch_from_fireant_historical(symbol: str) -> Dict[str, Any]:
+    """
+    Lấy dữ liệu lịch sử từ FireAnt API (giá đóng cửa)
+    HOẠT ĐỘNG MỌI LÚC
+    """
+    try:
+        end = datetime.now()
+        start = end - timedelta(days=60)
+        
+        url = "https://www.fireant.vn/api/Data/StockPriceHistory"
+        params = {
+            'symbols': symbol,
+            'startDate': start.strftime("%Y-%m-%d"),
+            'endDate': end.strftime("%Y-%m-%d")
+        }
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Referer': 'https://www.fireant.vn/'
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+        
+        if response.status_code != 200:
+            print(f"FireAnt history error: HTTP {response.status_code}")
+            return None
+        
+        data = response.json()
+        
+        if not data or 'data' not in data:
+            print(f"No data in FireAnt response for {symbol}")
+            return None
+        
+        history = data['data'].get(symbol)
+        if not history or len(history) == 0:
+            print(f"No history for {symbol}")
+            return None
+        
+        # Lấy ngày gần nhất
+        latest = history[-1]
+        price = latest.get('close', 0)
+        if price == 0:
+            print(f"Price is 0 for {symbol}")
+            return None
+        
+        # Tính chỉ báo từ lịch sử
+        closes = [day.get('close', 0) for day in history if day.get('close', 0) > 0]
+        volumes = [day.get('volume', 0) for day in history]
+        highs = [day.get('high', 0) for day in history]
+        lows = [day.get('low', 0) for day in history]
+        
+        if len(closes) < 20:
+            print(f"Not enough history for {symbol}, only {len(closes)} days")
+            return None
+        
+        ma20 = calculate_ma(closes, 20)
+        ma50 = calculate_ma(closes, 50)
+        rsi = calculate_rsi(closes, 14)
+        adx = calculate_adx(highs, lows, closes, 14)
+        atr = calculate_atr(highs, lows, closes, 14)
+        avg_volume = calculate_ma(volumes, 20) if volumes else 0
+        
+        volume = latest.get('volume', 0)
+        high = latest.get('high', price)
+        low = latest.get('low', price)
+        open_price = latest.get('open', price)
+        
+        volume_ratio = volume / avg_volume if avg_volume > 0 else 1
+        rr_ratio = calculate_risk_reward_vn(price, atr, adx)
+        score = calculate_score(price, ma20, ma50, rsi, volume_ratio, adx, rr_ratio)
+        
+        print(f"✅ Got {symbol} from FireAnt historical: {price}")
+        
+        return {
+            'price': price,
+            'change': 0,
+            'changePercent': 0,
+            'volume': volume,
+            'high': high,
+            'low': low,
+            'open': open_price,
+            'ma20': round(ma20, 2),
+            'ma50': round(ma50, 2),
+            'rsi': round(rsi, 2),
+            'adx': round(adx, 2),
+            'atr': round(atr, 2),
+            'rr_ratio': round(rr_ratio, 2),
+            'avgVolume20': round(avg_volume, 0),
+            'volume_ratio': round(volume_ratio, 2),
+            'score': score,
+            'source': 'fireant_historical',
+            'time': datetime.now().isoformat(),
+            'market_hours': is_market_hours()
+        }
+        
+    except Exception as e:
+        print(f"FireAnt historical error for {symbol}: {e}")
+        return None
+
+# ==========================================
+# NGUỒN 2: VNSTOCK LỊCH SỬ (FALLBACK)
 # ==========================================
 
 def fetch_from_vnstock_historical(symbol: str) -> Dict[str, Any]:
     """
-    Lấy dữ liệu lịch sử từ vnstock (giá đóng cửa)
-    HOẠT ĐỘNG CẢ TRONG VÀ NGOÀI GIỜ GIAO DỊCH
+    Lấy dữ liệu lịch sử từ vnstock (dự phòng)
     """
     try:
         from vnstock import Vnstock
-        import pandas as pd
         
         stock = Vnstock().stock(symbol=symbol, source="VCI")
         
-        # Lấy lịch sử 60 ngày
         end = datetime.now()
         start = end - timedelta(days=60)
         history = stock.quote.history(
@@ -284,17 +384,14 @@ def fetch_from_vnstock_historical(symbol: str) -> Dict[str, Any]:
         )
         
         if history.empty:
-            print(f"⚠️ No historical data for {symbol}")
             return None
         
-        # Lấy ngày gần nhất có dữ liệu
         latest = history.iloc[-1]
         price = float(latest['close'])
         
         if price == 0:
             return None
         
-        # Tính MA, RSI từ lịch sử
         closes = history['close'].tolist()
         volumes = history['volume'].tolist()
         highs = history['high'].tolist()
@@ -345,7 +442,7 @@ def fetch_from_vnstock_historical(symbol: str) -> Dict[str, Any]:
         return None
 
 # ==========================================
-# NGUỒN 2: FIRANT (REALTIME)
+# NGUỒN 3: FIRANT REALTIME (TRONG GIỜ)
 # ==========================================
 
 def fetch_from_fireant(symbol: str) -> Dict[str, Any]:
@@ -353,7 +450,7 @@ def fetch_from_fireant(symbol: str) -> Dict[str, Any]:
     try:
         url = f"https://www.fireant.vn/api/Data/StockPrices?symbols={symbol}"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0',
             'Accept': 'application/json',
             'Referer': 'https://www.fireant.vn/'
         }
@@ -376,10 +473,10 @@ def fetch_from_fireant(symbol: str) -> Dict[str, Any]:
         if price == 0:
             return None
         
-        print(f"✅ Got {symbol} from FireAnt: {price}")
+        print(f"✅ Got {symbol} from FireAnt realtime: {price}")
         
         # Lấy thêm lịch sử để tính MA
-        hist_data = fetch_from_vnstock_historical(symbol)
+        hist_data = fetch_from_fireant_historical(symbol)
         if hist_data:
             hist_data['source'] = 'fireant'
             hist_data['price'] = price
@@ -391,7 +488,6 @@ def fetch_from_fireant(symbol: str) -> Dict[str, Any]:
             hist_data['open'] = stock_data.get('open', price)
             return hist_data
         
-        # Fallback: trả về dữ liệu cơ bản
         return {
             'price': price,
             'change': stock_data.get('change', 0),
@@ -410,7 +506,7 @@ def fetch_from_fireant(symbol: str) -> Dict[str, Any]:
         return None
 
 # ==========================================
-# NGUỒN 3: VCBS (REALTIME)
+# NGUỒN 4: VCBS (TRONG GIỜ)
 # ==========================================
 
 def fetch_from_vcbs(symbol: str) -> Dict[str, Any]:
@@ -443,8 +539,7 @@ def fetch_from_vcbs(symbol: str) -> Dict[str, Any]:
         
         print(f"✅ Got {symbol} from VCBS: {price}")
         
-        # Lấy thêm lịch sử để tính MA
-        hist_data = fetch_from_vnstock_historical(symbol)
+        hist_data = fetch_from_fireant_historical(symbol)
         if hist_data:
             hist_data['source'] = 'vcbs'
             hist_data['price'] = price
@@ -474,7 +569,7 @@ def fetch_from_vcbs(symbol: str) -> Dict[str, Any]:
         return None
 
 # ==========================================
-# NGUỒN 4: CAFEF (GIÁ ĐÓNG CỬA)
+# NGUỒN 5: CAFEF (GIÁ ĐÓNG CỬA)
 # ==========================================
 
 def fetch_from_cafef(symbol: str) -> Dict[str, Any]:
@@ -509,8 +604,7 @@ def fetch_from_cafef(symbol: str) -> Dict[str, Any]:
         
         print(f"✅ Got {symbol} from CafeF: {price}")
         
-        # Lấy lịch sử để tính MA
-        hist_data = fetch_from_vnstock_historical(symbol)
+        hist_data = fetch_from_fireant_historical(symbol)
         if hist_data:
             hist_data['source'] = 'cafef'
             hist_data['price'] = price
@@ -534,60 +628,44 @@ def fetch_from_cafef(symbol: str) -> Dict[str, Any]:
         return None
 
 # ==========================================
-# HÀM CHÍNH LẤY DỮ LIỆU (MULTI-SOURCE)
+# HÀM CHÍNH LẤY DỮ LIỆU
 # ==========================================
 
 def get_stock_data(symbol: str) -> Dict[str, Any]:
     """
     Lấy dữ liệu từ nhiều nguồn
-    Thứ tự: Vnstock lịch sử (ổn định) -> FireAnt -> VCBS -> CafeF -> Sample
+    Thứ tự: FireAnt lịch sử -> Vnstock lịch sử -> FireAnt realtime -> VCBS -> CafeF -> Sample
     """
-    # 1. Vnstock lịch sử - HOẠT ĐỘNG MỌI LÚC, CÓ ĐẦY ĐỦ CHỈ BÁO
+    # 1. FireAnt lịch sử - HOẠT ĐỘNG MỌI LÚC
+    data = fetch_from_fireant_historical(symbol)
+    if data:
+        return data
+    
+    # 2. Vnstock lịch sử
     data = fetch_from_vnstock_historical(symbol)
     if data:
         return data
     
-    # 2. FireAnt (realtime)
+    # 3. FireAnt realtime (chỉ trong giờ)
     if is_market_hours():
         data = fetch_from_fireant(symbol)
         if data:
             return data
     
-    # 3. VCBS (realtime)
+    # 4. VCBS (chỉ trong giờ)
     if is_market_hours():
         data = fetch_from_vcbs(symbol)
         if data:
             return data
     
-    # 4. CafeF (giá đóng cửa)
+    # 5. CafeF
     data = fetch_from_cafef(symbol)
     if data:
         return data
     
-    # 5. Fallback cuối
+    # 6. Sample
     print(f"⚠️ Using sample data for {symbol}")
     return get_sample_data(symbol)
-
-def get_stock_data_with_indicators(symbol: str) -> Dict[str, Any]:
-    """Lấy dữ liệu và tính đầy đủ chỉ báo"""
-    data = get_stock_data(symbol)
-    
-    if not data:
-        return None
-    
-    # Đảm bảo có đầy đủ các chỉ báo
-    if 'ma20' not in data:
-        data['ma20'] = data['price'] * 0.98
-        data['ma50'] = data['price'] * 0.96
-        data['rsi'] = 55
-        data['adx'] = 25
-        data['atr'] = data['price'] * 0.02
-        data['rr_ratio'] = 1.5
-        data['avgVolume20'] = data.get('volume', 1000000)
-        data['volume_ratio'] = 1
-        data['score'] = 65
-    
-    return data
 
 def get_stock_data_batch(symbols: List[str]) -> Dict[str, Any]:
     """Lấy dữ liệu batch"""
@@ -600,7 +678,7 @@ def get_stock_data_batch(symbols: List[str]) -> Dict[str, Any]:
             print(f"⏰ Timeout at {symbol}")
             break
         try:
-            data = get_stock_data_with_indicators(symbol)
+            data = get_stock_data(symbol)
             if data:
                 result[symbol] = data
         except Exception as e:
@@ -619,7 +697,7 @@ async def root():
         "status": "running",
         "total_stocks": len(get_all_stocks()),
         "market_hours": is_market_hours(),
-        "data_sources": ["vnstock_historical", "FireAnt", "VCBS", "CafeF"],
+        "data_sources": ["FireAnt_Historical", "Vnstock_Historical", "FireAnt_Realtime", "VCBS", "CafeF"],
         "endpoints": {
             "health": "/health",
             "price": "/api/price?symbols=VCB,FPT",
@@ -642,7 +720,7 @@ async def health():
 @app.get("/api/test/{symbol}")
 async def test_symbol(symbol: str):
     """Test endpoint để debug"""
-    data = get_stock_data_with_indicators(symbol.upper())
+    data = get_stock_data(symbol.upper())
     if data:
         return {"symbol": symbol, "success": True, "data": data}
     return {"symbol": symbol, "success": False, "error": "Cannot fetch data from any source"}
@@ -654,7 +732,7 @@ async def get_price(symbols: str = Query(..., description="Mã cổ phiếu")):
     data = {}
     
     for symbol in symbol_list:
-        stock_data = get_stock_data_with_indicators(symbol)
+        stock_data = get_stock_data(symbol)
         if stock_data:
             data[symbol] = stock_data
     
